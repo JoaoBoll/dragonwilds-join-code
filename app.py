@@ -6,7 +6,6 @@ from __future__ import annotations
 import html
 import os
 import re
-import subprocess
 import threading
 import time
 from http import HTTPStatus
@@ -15,15 +14,14 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 
-HOST = os.environ.get("JOIN_CODE_HOST", "127.0.0.1")
+HOST = os.environ.get("JOIN_CODE_HOST", "0.0.0.0")
 PORT = int(os.environ.get("JOIN_CODE_PORT", "8787"))
-REFRESH_COMMAND = [
-    "/usr/bin/sudo",
-    "-n",
-    "/usr/local/libexec/dragonwilds-join-code",
-]
+LOG_FILE = Path(os.environ.get("JOIN_CODE_LOG_FILE", "/logs/dragonwilds.log"))
 WEB_ROOT = Path(__file__).resolve().parent / "web"
-JOIN_CODE_PATTERN = re.compile(r"^[A-Z0-9]{4,12}-[A-Z0-9]{4,12}$")
+JOIN_CODE_PATTERN = re.compile(
+    r'Setting \["JoinCode"\].*?value\[([A-Z0-9]{4,12}-[A-Z0-9]{4,12})\]'
+)
+MAX_LOG_BYTES = 2 * 1024 * 1024
 MIN_REFRESH_SECONDS = 3.0
 
 _cache_lock = threading.Lock()
@@ -32,7 +30,7 @@ _cached_code: str | None = None
 
 
 def read_join_code() -> str:
-    """Run one hard-coded helper and accept only a Join Code as output."""
+    """Read the end of the shared log and return only a validated Join Code."""
     global _cached_at, _cached_code
 
     with _cache_lock:
@@ -40,21 +38,22 @@ def read_join_code() -> str:
         if _cached_code and now - _cached_at < MIN_REFRESH_SECONDS:
             return _cached_code
 
-        result = subprocess.run(
-            REFRESH_COMMAND,
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-            env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
-        )
-        code = result.stdout.strip()
-        if result.returncode != 0 or not JOIN_CODE_PATTERN.fullmatch(code):
+        try:
+            with LOG_FILE.open("rb") as log:
+                log.seek(0, os.SEEK_END)
+                size = log.tell()
+                log.seek(max(0, size - MAX_LOG_BYTES))
+                contents = log.read().decode("utf-8", errors="replace")
+        except OSError as error:
+            raise RuntimeError("join code unavailable") from error
+
+        matches = JOIN_CODE_PATTERN.findall(contents)
+        if not matches:
             raise RuntimeError("join code unavailable")
 
-        _cached_code = code
+        _cached_code = matches[-1]
         _cached_at = now
-        return code
+        return _cached_code
 
 
 class JoinCodeHandler(BaseHTTPRequestHandler):
@@ -96,7 +95,7 @@ class JoinCodeHandler(BaseHTTPRequestHandler):
 
         try:
             code = read_join_code()
-        except (RuntimeError, subprocess.TimeoutExpired):
+        except RuntimeError:
             code = "Indisponível"
 
         template = (WEB_ROOT / "index.html").read_text(encoding="utf-8")

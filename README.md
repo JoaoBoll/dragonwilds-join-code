@@ -1,49 +1,73 @@
 # Dragonwilds Join Code
 
-Uma página pública que exibe somente o `JoinCode` mais recente do contêiner
-`dragonwilds-local`.
+Página web pública e somente leitura que mostra o `JoinCode` mais recente do
+contêiner `dragonwilds-local`.
 
-Cada acesso à página consulta o código naquele momento. Não há atualização em
-segundo plano, JavaScript, formulário, login, parâmetros ou comandos enviados
-pelo visitante.
+O site roda em um contêiner próprio. Ele não recebe o socket do Docker e não
+executa comandos no host. O servidor Dragonwilds grava uma cópia de seu stdout
+em `shared_logs/dragonwilds.log`, montada como somente leitura no contêiner web.
 
-## O que fica exposto
+## Estrutura esperada no Ubuntu
 
-Somente uma página HTML, uma folha de estilos e o Join Code. A aplicação:
-
-- não monta nem publica o socket do Docker;
-- não pertence ao grupo `docker`;
-- não aceita nomes de contêiner, comandos ou qualquer entrada do visitante;
-- permite executar somente um helper root de caminho fixo e sem argumentos;
-- valida a saída e só mostra algo que tenha o formato `XXXX-XXXX`;
-- devolve `404` para qualquer outra rota;
-- limita a leitura dos logs a uma vez a cada três segundos em caso de muitos
-  acessos simultâneos.
-
-O Join Code será público para qualquer pessoa que conheça a URL. Isso é parte
-da finalidade da página; nenhum outro dado do servidor é retornado.
-
-## Instalação no servidor
-
-Copie a pasta para o servidor e execute:
-
-```bash
-cd ~/dragonwilds-server/join-code-web
-chmod +x install.sh bin/dragonwilds-join-code
-sudo ./install.sh
+```text
+~/dragonwilds-server/
+├── docker-compose.yml
+├── server_files/
+└── dragonwilds-join-code/
+    ├── Dockerfile
+    └── docker-compose.join-code.yml
 ```
 
-Teste no próprio servidor:
+O `docker-compose.yml` principal continua sendo o arquivo que você já possui.
+O segundo Compose complementa o primeiro: mantém o volume de `server_files`,
+adiciona o arquivo de log compartilhado e cria o serviço `join-code`.
+
+## Instalação
+
+Na pasta do servidor:
 
 ```bash
+cd ~/dragonwilds-server
+git clone https://github.com/JoaoBoll/dragonwilds-join-code.git
+mkdir -p shared_logs
+sudo chown 1000:1000 shared_logs
+```
+
+Se o repositório já existir nessa pasta:
+
+```bash
+cd ~/dragonwilds-server/dragonwilds-join-code
+git pull
+cd ..
+```
+
+Suba os dois serviços usando os dois arquivos Compose:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f dragonwilds-join-code/docker-compose.join-code.yml \
+  up -d --build
+```
+
+Confira:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f dragonwilds-join-code/docker-compose.join-code.yml \
+  ps
+
 curl http://127.0.0.1:8787
 ```
 
-O serviço escuta somente em `127.0.0.1:8787`. Para disponibilizar a página,
-aponte seu proxy HTTPS (Caddy, Nginx ou Cloudflare Tunnel) para esse endereço.
-Assim, a aplicação continua sem uma porta própria aberta na internet.
+## Acesso externo
 
-Exemplo mínimo para Caddy, substituindo o domínio:
+A porta é publicada somente em `127.0.0.1:8787`. Aponte Caddy, Nginx ou um
+Cloudflare Tunnel para esse endereço. Dessa forma, a aplicação não expõe uma
+porta adicional diretamente na internet.
+
+Exemplo Caddy:
 
 ```caddyfile
 join.seudominio.com {
@@ -51,9 +75,25 @@ join.seudominio.com {
 }
 ```
 
-## Operação
+## Atualizações e operação
+
+Para aplicar atualizações do projeto:
 
 ```bash
-journalctl -u dragonwilds-join-code -f
-sudo systemctl restart dragonwilds-join-code
+cd ~/dragonwilds-server/dragonwilds-join-code
+git pull
+cd ..
+docker compose \
+  -f docker-compose.yml \
+  -f dragonwilds-join-code/docker-compose.join-code.yml \
+  up -d --build
 ```
+
+Logs:
+
+```bash
+docker logs -f dragonwilds-join-code
+docker logs -f dragonwilds-local
+```
+
+O Join Code é lido quando alguém acessa a página. Não há consulta periódica.

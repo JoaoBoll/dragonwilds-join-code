@@ -1,0 +1,29 @@
+services:
+  dragonwilds:
+    volumes:
+      - ./shared_logs:/var/log/dragonwilds
+    command: >
+      bash -o pipefail -c 'cd /home/steam/dragonwilds_files &&
+      : > /var/log/dragonwilds/dragonwilds.log &&
+      ./RSDragonwilds/Binaries/Linux/RSDragonwildsServer-Linux-Shipping -log -NewConsole 2>&1 |
+      tee -a /var/log/dragonwilds/dragonwilds.log'
+
+  join-code:
+    build:
+      context: ./dragonwilds-join-code
+    container_name: dragonwilds-join-code
+    restart: unless-stopped
+    depends_on:
+      - dragonwilds
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - ./shared_logs:/logs:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 64

@@ -1,15 +1,9 @@
+from io import BytesIO
 from pathlib import Path
 from unittest import mock
-import subprocess
 import unittest
 
 import app
-
-
-class CompletedCommand:
-    def __init__(self, stdout, returncode=0):
-        self.stdout = stdout
-        self.returncode = returncode
 
 
 class JoinCodeWebTest(unittest.TestCase):
@@ -17,20 +11,25 @@ class JoinCodeWebTest(unittest.TestCase):
         app._cached_code = None
         app._cached_at = 0.0
 
-    @mock.patch("app.subprocess.run", return_value=CompletedCommand("PXQ5-8PF0\n"))
-    def test_join_code_is_read_and_validated(self, run):
+    @mock.patch.object(
+        app.Path,
+        "open",
+        return_value=BytesIO(
+            b'[1] Setting ["JoinCode"] written with key[xz] value[AAAA-BBBB]\n'
+            b'[2] Setting ["JoinCode"] written with key[xz] value[PXQ5-8PF0]\n'
+        )
+    )
+    def test_latest_join_code_is_returned(self, _open):
         self.assertEqual(app.read_join_code(), "PXQ5-8PF0")
-        run.assert_called_once()
-        self.assertEqual(app.REFRESH_COMMAND[-1], "/usr/local/libexec/dragonwilds-join-code")
 
-    @mock.patch("app.subprocess.run", return_value=CompletedCommand("server logs and secrets\n"))
-    def test_unexpected_output_is_not_exposed(self, _run):
+    @mock.patch.object(app.Path, "open", return_value=BytesIO(b"server logs and secrets\n"))
+    def test_other_log_data_is_not_exposed(self, _open):
         with self.assertRaisesRegex(RuntimeError, "unavailable"):
             app.read_join_code()
 
-    @mock.patch("app.subprocess.run", side_effect=subprocess.TimeoutExpired("helper", 5))
-    def test_helper_timeout_is_bounded(self, _run):
-        with self.assertRaises(subprocess.TimeoutExpired):
+    @mock.patch.object(app.Path, "open", side_effect=FileNotFoundError)
+    def test_missing_log_is_reported_as_unavailable(self, _open):
+        with self.assertRaisesRegex(RuntimeError, "unavailable"):
             app.read_join_code()
 
     def test_page_contains_no_script_or_form(self):
