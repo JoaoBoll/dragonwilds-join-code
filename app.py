@@ -19,40 +19,69 @@ PORT = int(os.environ.get("JOIN_CODE_PORT", "8787"))
 LOG_FILE = Path(os.environ.get("JOIN_CODE_LOG_FILE", "/logs/dragonwilds.log"))
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 JOIN_CODE_PATTERN = re.compile(
-    r'Setting \["JoinCode"\].*?value\[([A-Z0-9]{4,12}-[A-Z0-9]{4,12})\]'
+    rb'Setting \["JoinCode"\].*?value\[([A-Z0-9]{4,12}-[A-Z0-9]{4,12})\]'
 )
-MAX_LOG_BYTES = 2 * 1024 * 1024
 MIN_REFRESH_SECONDS = 3.0
+READ_CHUNK_SIZE = 64 * 1024
+OVERLAP_BYTES = 4096
 
 _cache_lock = threading.Lock()
 _cached_at = 0.0
 _cached_code: str | None = None
+_log_position = 0
+_log_identity: tuple[int, int] | None = None
+_log_mtime_ns: int | None = None
+_log_tail = b""
 
 
 def read_join_code() -> str:
-    """Read the end of the shared log and return only a validated Join Code."""
-    global _cached_at, _cached_code
+    """Scan the current log once, then inspect only bytes appended to it."""
+    global _cached_at, _cached_code, _log_position
+    global _log_identity, _log_mtime_ns, _log_tail
 
     with _cache_lock:
         now = time.monotonic()
-        if _cached_code and now - _cached_at < MIN_REFRESH_SECONDS:
+        if now - _cached_at < MIN_REFRESH_SECONDS:
+            if _cached_code is None:
+                raise RuntimeError("join code unavailable")
             return _cached_code
 
         try:
             with LOG_FILE.open("rb") as log:
-                log.seek(0, os.SEEK_END)
-                size = log.tell()
-                log.seek(max(0, size - MAX_LOG_BYTES))
-                contents = log.read().decode("utf-8", errors="replace")
+                stat = os.fstat(log.fileno())
+                identity = (stat.st_dev, stat.st_ino)
+
+                if (
+                    identity != _log_identity
+                    or stat.st_size < _log_position
+                    or (
+                        stat.st_size == _log_position
+                        and stat.st_mtime_ns != _log_mtime_ns
+                    )
+                ):
+                    _log_position = 0
+                    _cached_code = None
+                    _log_tail = b""
+
+                _log_identity = identity
+                log.seek(_log_position)
+                while chunk := log.read(READ_CHUNK_SIZE):
+                    data = _log_tail + chunk
+                    matches = JOIN_CODE_PATTERN.findall(data)
+                    if matches:
+                        _cached_code = matches[-1].decode("ascii")
+                    _log_tail = data[-OVERLAP_BYTES:]
+
+                _log_position = log.tell()
+                _log_mtime_ns = os.fstat(log.fileno()).st_mtime_ns
         except OSError as error:
+            _cached_code = None
+            _cached_at = now
             raise RuntimeError("join code unavailable") from error
 
-        matches = JOIN_CODE_PATTERN.findall(contents)
-        if not matches:
-            raise RuntimeError("join code unavailable")
-
-        _cached_code = matches[-1]
         _cached_at = now
+        if _cached_code is None:
+            raise RuntimeError("join code unavailable")
         return _cached_code
 
 
